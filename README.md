@@ -2,9 +2,14 @@
 
 Proxy validador de tokens OAuth, reutilizable: la misma imagen protege
 cualquier recurso propio verificando un JWT emitido por
-[`lbcdev-lab-oauth-server`](https://github.com/Luinux81/lbcdev-lab-oauth-server).
+[`lbcdev-lab-oauth-server`](https://github.com/Luinux81/lbcdev-lab-oauth-server)
+(o cualquier authorization server compatible con OAuth 2.1 + JWKS público).
 La configuración por recurso (qué protege, contra qué upstream) entra por
 variables de entorno — la ruta expuesta en sí no (ver limitación conocida).
+
+Cada recurso protegido es una instancia distinta de esta misma imagen, con
+sus propias variables de entorno. No hay límite de cuántas instancias puedes
+correr en el mismo servidor — normalmente, una por recurso.
 
 ## Stack
 
@@ -16,7 +21,8 @@ variables de entorno — la ruta expuesta en sí no (ver limitación conocida).
 1. Descarga y cachea el JWKS del `AUTH_ISSUER` (refresco automático si aparece
    un `kid` desconocido)
 2. Verifica firma, expiración y que `aud` coincide exactamente con `RESOURCE_URL`
-3. Si es válido, reenvía la petición tal cual (incluye streaming/SSE) a `UPSTREAM_URL`
+3. Si es válido, reenvía la petición a `UPSTREAM_URL` (aplicando
+   `UPSTREAM_EXTRA_HEADERS` si está definida), incluyendo streaming/SSE
 4. Si no hay token o es inválido, responde `401` con `WWW-Authenticate`
    apuntando a su propio `/.well-known/oauth-protected-resource`
 
@@ -24,11 +30,11 @@ variables de entorno — la ruta expuesta en sí no (ver limitación conocida).
 
 | Variable | Obligatoria | Ejemplo |
 |---|---|---|
-| `RESOURCE_URL` | sí | `https://mcp-grafana.my-vps.lbcdev.es/mcp` |
-| `AUTH_ISSUER` | sí | `https://auth.lbcdev.es` |
-| `UPSTREAM_URL` | sí | `http://host.docker.internal:8000/mcp` |
-| `UPSTREAM_HOST_HEADER` | no | `127.0.0.1:8000` — fuerza la cabecera `Host` hacia el upstream, necesario si este valida por `Host` (protección anti DNS-rebinding, es el caso de `mcp-grafana`) |
-| `UPSTREAM_EXTRA_HEADERS` | no | Cabeceras fijas a inyectar/sobreescribir hacia el upstream, una por línea (Cabecera:valor). Sobreescribe cualquier cabecera entrante con el mismo nombre — útil para upstreams que exigen credenciales propias además del JWT que valida guard (caso portainer-mcp). |
+| `RESOURCE_URL` | sí | `https://mcp.example.com/mcp` |
+| `AUTH_ISSUER` | sí | `https://auth.example.com` |
+| `UPSTREAM_URL` | sí | `http://host.docker.internal:8000/mcp` (upstream en el host o en otro stack) o `http://nombre-del-servicio:8000/mcp` (upstream en la misma red Docker interna) |
+| `UPSTREAM_HOST_HEADER` | no | `127.0.0.1:8000` — fuerza la cabecera `Host` hacia el upstream, necesario si este valida por `Host` (protección anti DNS-rebinding) |
+| `UPSTREAM_EXTRA_HEADERS` | no | Cabeceras fijas a inyectar/sobreescribir hacia el upstream, una por línea (`Cabecera:valor`). Sobreescribe cualquier cabecera entrante con el mismo nombre — útil para upstreams que exigen credenciales propias además del JWT que ya valida `guard` |
 
 ## Endpoints
 
@@ -44,22 +50,14 @@ A diferencia de `RESOURCE_URL`/`UPSTREAM_URL`, la ruta que expone el proxy
 (`/mcp`) y los métodos aceptados (`GET`, `POST`, `DELETE`) están fijos en
 `app/main.py` (`@app.api_route("/mcp", ...)`), no son configurables por
 entorno. Válido mientras todo lo que protejas exponga su endpoint real en
-`/mcp` (caso de todos los MCP servers vistos hasta ahora). Si algún recurso
-futuro usa otra ruta (`/sse`, `/rpc`, etc.), hay que editar el decorador
-antes de construir la imagen para ese caso, o generalizar la ruta —
-candidato a PMT futuro si llega a hacer falta.
-
-## Instancias desplegadas
-
-| Stack Portainer | Protege | `RESOURCE_URL` |
-|---|---|---|
-| `mcp-grafana-guard` | `mcp-grafana` | `https://mcp-grafana.my-vps.lbcdev.es/mcp` |
-| `portainer-mcp-with-guard` | `portainer-mcp` | `https://portainer-mcp.lbcdev.es/mcp` |
+`/mcp` (caso típico de servidores MCP). Si algún recurso futuro usa otra
+ruta (`/sse`, `/rpc`, etc.), hay que editar el decorador antes de construir
+la imagen para ese caso, o generalizar la ruta.
 
 ## Despliegue de una instancia nueva (proteger un recurso adicional)
 
-Mismo VPS, misma imagen ya construida — solo hace falta un stack de Portainer
-nuevo con variables distintas. No requiere clonar el repo de nuevo si ya está
+Mismo servidor, misma imagen ya construida — solo hace falta un stack nuevo
+con variables distintas. No requiere clonar el repo de nuevo si ya está
 presente en el servidor.
 
 ```yaml
@@ -73,20 +71,23 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - RESOURCE_URL=https://TU-DOMINIO/mcp
-      - AUTH_ISSUER=https://auth.lbcdev.es
+      - AUTH_ISSUER=https://auth.example.com
       - UPSTREAM_URL=http://host.docker.internal:PUERTO_DEL_MCP_REAL/mcp
       # - UPSTREAM_HOST_HEADER=127.0.0.1:PUERTO_DEL_MCP_REAL  # solo si el upstream valida Host
+      # - UPSTREAM_EXTRA_HEADERS=Cabecera-Fija:valor           # una entrada por línea, ver tabla arriba
 ```
 
-Luego, vhost Nginx del recurso apuntando al proxy en vez de al MCP directo —
-usa como plantilla el de `mcp-grafana` (ver más abajo), cambiando dominio y
-puerto.
+Si el recurso a proteger vive en la misma red Docker interna que `guard`
+(en vez de en el host o en otro stack), omite `extra_hosts` y usa
+`UPSTREAM_URL=http://nombre-del-servicio:PUERTO/mcp` directamente.
 
-## Despliegue en un VPS nuevo, desde cero
+Luego, vhost Nginx del recurso apuntando al proxy en vez de al MCP directo.
+
+## Despliegue en un servidor nuevo, desde cero
 
 ### 1. Acceso de lectura al repo (deploy key)
 
-Este repo es privado. Usa una deploy key propia, de solo lectura — no
+Si el repo es privado, usa una deploy key propia, de solo lectura — no
 reutilices tu clave personal ni un token de acceso personal.
 
 ```bash
@@ -112,12 +113,11 @@ chmod 600 ~/.ssh/config
 Verifica antes de clonar:
 ```bash
 ssh -T git@github-resource-guard
-# Esperado: "Hi Luinux81/lbcdev-lab-oauth-resource-guard-proxy! You've successfully authenticated..."
 ```
 
 Clona:
 ```bash
-git clone git@github-resource-guard:Luinux81/lbcdev-lab-oauth-resource-guard-proxy.git resource-guard
+git clone git@github-resource-guard:<owner>/<repo>.git resource-guard
 cd resource-guard
 ```
 
@@ -131,7 +131,7 @@ Una sola imagen sirve para todas las instancias/recursos que quieras
 proteger en ese servidor — no se reconstruye por cada recurso, solo cuando
 cambia el código.
 
-### 3. Desplegar la primera instancia (Portainer, stack vía Web editor)
+### 3. Desplegar la primera instancia
 
 Ver plantilla de compose en "Despliegue de una instancia nueva" arriba.
 
@@ -198,22 +198,14 @@ curl -si --max-time 5 https://TU-DOMINIO/mcp -H "Authorization: Bearer TOKEN"
 ## Actualizar el código en un despliegue existente
 
 El código se reconstruye **una vez**; luego hay que redesplegar **cada**
-stack de Portainer que use esta imagen (hoy solo `mcp-grafana-guard`, más
-adelante también el de FreshRSS, etc.) — actualizar uno no actualiza los
-demás automáticamente.
+stack que use esta imagen — actualizar uno no actualiza los demás
+automáticamente.
 
 ```bash
 cd resource-guard   # el clon en el servidor, no el repo de trabajo local
 git pull
 docker build -t resource-guard:latest .
 ```
-Luego, en Portainer: por cada stack afectado → *Editor* → **"Update the
-stack"** (sin marcar "Pull latest image" — la imagen es local).
-
-## Estado
-
-- [x] Validación JWT (firma, expiración, `aud`)
-- [x] Proxy transparente con streaming (probado contra `mcp-grafana`)
-- [x] Verificado end-to-end con conector real de Claude.ai (PMT 5)
-- [ ] Ruta `/mcp` parametrizada (hoy hardcodeada, ver limitación arriba)
-- [ ] Segunda instancia (FreshRSS u otro)
+Luego, en tu herramienta de gestión de contenedores (p. ej. Portainer): por
+cada stack afectado, redeploy sin volver a hacer pull de imagen — la imagen
+es local.
