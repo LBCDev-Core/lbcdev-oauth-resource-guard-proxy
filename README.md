@@ -28,6 +28,7 @@ variables de entorno — la ruta expuesta en sí no (ver limitación conocida).
 | `AUTH_ISSUER` | sí | `https://auth.lbcdev.es` |
 | `UPSTREAM_URL` | sí | `http://host.docker.internal:8000/mcp` |
 | `UPSTREAM_HOST_HEADER` | no | `127.0.0.1:8000` — fuerza la cabecera `Host` hacia el upstream, necesario si este valida por `Host` (protección anti DNS-rebinding, es el caso de `mcp-grafana`) |
+| `UPSTREAM_EXTRA_HEADERS` | no | Cabeceras fijas a inyectar/sobreescribir hacia el upstream, una por línea (Cabecera:valor). Sobreescribe cualquier cabecera entrante con el mismo nombre — útil para upstreams que exigen credenciales propias además del JWT que valida guard (caso portainer-mcp). |
 
 ## Endpoints
 
