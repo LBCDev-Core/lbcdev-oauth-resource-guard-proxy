@@ -54,6 +54,7 @@ candidato a PMT futuro si llega a hacer falta.
 | Stack Portainer | Protege | `RESOURCE_URL` |
 |---|---|---|
 | `mcp-grafana-guard` | `mcp-grafana` | `https://mcp-grafana.my-vps.lbcdev.es/mcp` |
+| `portainer-mcp-with-guard` | `portainer-mcp` | `https://portainer-mcp.lbcdev.es/mcp` |
 
 ## Despliegue de una instancia nueva (proteger un recurso adicional)
 
