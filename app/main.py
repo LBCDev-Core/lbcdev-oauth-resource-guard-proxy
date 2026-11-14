@@ -12,6 +12,10 @@ UPSTREAM_URL = os.environ["UPSTREAM_URL"]
 UPSTREAM_HOST_HEADER = os.environ.get("UPSTREAM_HOST_HEADER")
 UPSTREAM_EXTRA_HEADERS_RAW = os.environ.get("UPSTREAM_EXTRA_HEADERS", "")
 
+DEFAULT_RESOURCE_PATH = "/mcp"
+HEALTH_PATH = "/healthz"
+METADATA_PATH = "/.well-known/oauth-protected-resource"
+
 _client = httpx.AsyncClient(timeout=None)
 
 HOP_BY_HOP = {
@@ -34,12 +38,32 @@ def _parse_extra_headers(raw: str) -> dict[str, str]:
 UPSTREAM_EXTRA_HEADERS = _parse_extra_headers(UPSTREAM_EXTRA_HEADERS_RAW)
 
 
-@app.get("/healthz")
+def _resolve_resource_path(raw: str | None) -> str:
+    """Ruta pública del proxy. Sin definir (o vacía) es /mcp; si es inválida,
+    falla al arrancar en vez de escuchar en una ruta distinta de la esperada."""
+    path = (raw or "").strip()
+    if not path:
+        return DEFAULT_RESOURCE_PATH
+    if not path.startswith("/"):
+        raise ValueError(f"RESOURCE_PATH debe empezar por '/': {path!r}")
+    if any(c in path for c in "?#{}") or any(c.isspace() for c in path):
+        raise ValueError(
+            f"RESOURCE_PATH no puede contener '?', '#', '{{', '}}' ni espacios: {path!r}"
+        )
+    if path.rstrip("/") in (HEALTH_PATH, METADATA_PATH):
+        raise ValueError(f"RESOURCE_PATH no puede coincidir con una ruta reservada: {path!r}")
+    return path
+
+
+RESOURCE_PATH = _resolve_resource_path(os.environ.get("RESOURCE_PATH"))
+
+
+@app.get(HEALTH_PATH)
 def healthz():
     return {"status": "ok", "resource": RESOURCE_URL}
 
 
-@app.get("/.well-known/oauth-protected-resource")
+@app.get(METADATA_PATH)
 def protected_resource_metadata():
     return {
         "resource": RESOURCE_URL,
@@ -48,7 +72,7 @@ def protected_resource_metadata():
     }
 
 
-@app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+@app.api_route(RESOURCE_PATH, methods=["GET", "POST", "DELETE"])
 async def mcp_proxy(request: Request, claims=Depends(verify_token)):
     body = await request.body()
     forward_headers = {
