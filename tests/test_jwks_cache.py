@@ -1,6 +1,5 @@
 import sys
 
-import pytest
 from authlib.jose import JsonWebKey
 from fastapi.testclient import TestClient
 
@@ -53,14 +52,6 @@ def test_key_rotation_with_same_kid_forces_refresh(load_app, jwks_server, token)
     assert len(jwks_server.calls) == 2
 
 
-UNKNOWN_KID_BUG = (
-    "auth_check.verify_token solo captura JoseError, pero authlib lanza ValueError "
-    "cuando el kid del token no está en el JWKS en caché: el proxy responde 500 "
-    "en vez de refrescar el JWKS"
-)
-
-
-@pytest.mark.xfail(reason=UNKNOWN_KID_BUG, strict=True)
 def test_key_rotation_with_new_kid_forces_refresh(load_app, jwks_server, token):
     main, _ = load_app(patch_jwks=False)
     client = TestClient(main.app, raise_server_exceptions=False)
@@ -69,11 +60,15 @@ def test_key_rotation_with_new_kid_forces_refresh(load_app, jwks_server, token):
     new_key = JsonWebKey.generate_key("RSA", 2048, is_private=True, options={"kid": "nueva"})
     jwks_server.keys = [new_key]
 
-    assert client.get("/mcp", headers=auth(make_token(key=new_key))).status_code == 200
+    rotated = make_token(key=new_key)
+    assert client.get("/mcp", headers=auth(rotated)).status_code == 200
     assert len(jwks_server.calls) == 2
+    # La clave nueva queda en caché, y el token de la clave retirada deja de valer.
+    assert client.get("/mcp", headers=auth(rotated)).status_code == 200
+    assert len(jwks_server.calls) == 2
+    assert client.get("/mcp", headers=auth(token)).status_code == 401
 
 
-@pytest.mark.xfail(reason=UNKNOWN_KID_BUG, strict=True)
 def test_token_with_unknown_kid_gives_401(load_app, jwks_server, token):
     main, seen = load_app(patch_jwks=False)
     client = TestClient(main.app, raise_server_exceptions=False)
@@ -83,6 +78,8 @@ def test_token_with_unknown_kid_gives_401(load_app, jwks_server, token):
     assert resp.status_code == 401
     assert "www-authenticate" in resp.headers
     assert seen == []
+    # Un intento de refresco, igual que con cualquier token que no valida.
+    assert len(jwks_server.calls) == 2
 
 
 def test_invalid_token_triggers_one_refresh_then_401(load_app, jwks_server, token, other_key):
