@@ -4,8 +4,8 @@ Proxy validador de tokens OAuth, reutilizable: la misma imagen protege
 cualquier recurso propio verificando un JWT emitido por
 [`lbcdev-lab-oauth-server`](https://github.com/Luinux81/lbcdev-lab-oauth-server)
 (o cualquier authorization server compatible con OAuth 2.1 + JWKS público).
-La configuración por recurso (qué protege, contra qué upstream) entra por
-variables de entorno — la ruta expuesta en sí no (ver limitación conocida).
+La configuración por recurso (qué protege, contra qué upstream y en qué ruta
+se expone) entra por variables de entorno.
 
 Cada recurso protegido es una instancia distinta de esta misma imagen, con
 sus propias variables de entorno. No hay límite de cuántas instancias puedes
@@ -33,6 +33,7 @@ correr en el mismo servidor — normalmente, una por recurso.
 | `RESOURCE_URL` | sí | `https://mcp.example.com/mcp` |
 | `AUTH_ISSUER` | sí | `https://auth.example.com` |
 | `UPSTREAM_URL` | sí | `http://host.docker.internal:8000/mcp` (upstream en el host o en otro stack) o `http://nombre-del-servicio:8000/mcp` (upstream en la misma red Docker interna) |
+| `RESOURCE_PATH` | no | `/sse` — ruta pública en la que escucha el proxy. Por defecto `/mcp` (ver "Ruta pública" más abajo) |
 | `UPSTREAM_HOST_HEADER` | no | `127.0.0.1:8000` — fuerza la cabecera `Host` hacia el upstream, necesario si este valida por `Host` (protección anti DNS-rebinding) |
 | `UPSTREAM_EXTRA_HEADERS` | no | Cabeceras fijas a inyectar/sobreescribir hacia el upstream, una por línea (`Cabecera:valor`). Sobreescribe cualquier cabecera entrante con el mismo nombre — útil para upstreams que exigen credenciales propias además del JWT que ya valida `guard` |
 
@@ -42,17 +43,36 @@ correr en el mismo servidor — normalmente, una por recurso.
 |---|---|---|
 | GET | `/healthz` | Comprobación de salud |
 | GET | `/.well-known/oauth-protected-resource` | Metadata RFC 9728 |
-| GET/POST/DELETE | `/mcp` | Proxy real hacia `UPSTREAM_URL`, streaming transparente |
+| GET/POST/DELETE | `RESOURCE_PATH` (por defecto `/mcp`) | Proxy real hacia `UPSTREAM_URL`, streaming transparente |
 
-## ⚠️ Limitación conocida: la ruta `/mcp` está hardcodeada
+## Ruta pública (`RESOURCE_PATH`)
 
-A diferencia de `RESOURCE_URL`/`UPSTREAM_URL`, la ruta que expone el proxy
-(`/mcp`) y los métodos aceptados (`GET`, `POST`, `DELETE`) están fijos en
-`app/main.py` (`@app.api_route("/mcp", ...)`), no son configurables por
-entorno. Válido mientras todo lo que protejas exponga su endpoint real en
-`/mcp` (caso típico de servidores MCP). Si algún recurso futuro usa otra
-ruta (`/sse`, `/rpc`, etc.), hay que editar el decorador antes de construir
-la imagen para ese caso, o generalizar la ruta.
+La ruta en la que el proxy acepta peticiones es configurable por instancia
+con `RESOURCE_PATH`. Si no se define (o se deja vacía), es `/mcp`, así que
+las instancias que ya usan `/mcp` no necesitan ningún cambio.
+
+Los métodos aceptados siguen siendo fijos: `GET`, `POST` y `DELETE`.
+
+Ejemplo para un recurso que expone su endpoint en `/sse`:
+
+```yaml
+    environment:
+      - RESOURCE_PATH=/sse
+      - RESOURCE_URL=https://TU-DOMINIO/sse
+      - AUTH_ISSUER=https://auth.example.com
+      - UPSTREAM_URL=http://host.docker.internal:PUERTO_DEL_RECURSO/sse
+```
+
+A tener en cuenta:
+
+- `RESOURCE_PATH` solo decide dónde escucha el proxy. `RESOURCE_URL` y
+  `UPSTREAM_URL` son independientes y hay que ajustarlas a mano: el token
+  debe llevar como `aud` exactamente el `RESOURCE_URL` de esa instancia.
+- `/healthz` y `/.well-known/oauth-protected-resource` no cambian de sitio.
+- Una ruta inválida impide arrancar el contenedor, con un mensaje
+  `RESOURCE_PATH ...` en el log. Debe empezar por `/`, no puede contener
+  `?`, `#`, `{`, `}` ni espacios, y no puede coincidir con `/healthz` ni con
+  `/.well-known/oauth-protected-resource`.
 
 ## Despliegue de una instancia nueva (proteger un recurso adicional)
 
@@ -73,6 +93,7 @@ services:
       - RESOURCE_URL=https://TU-DOMINIO/mcp
       - AUTH_ISSUER=https://auth.example.com
       - UPSTREAM_URL=http://host.docker.internal:PUERTO_DEL_MCP_REAL/mcp
+      # - RESOURCE_PATH=/mcp                                   # solo si el recurso no se expone en /mcp
       # - UPSTREAM_HOST_HEADER=127.0.0.1:PUERTO_DEL_MCP_REAL  # solo si el upstream valida Host
       # - UPSTREAM_EXTRA_HEADERS=Cabecera-Fija:valor           # una entrada por línea, ver tabla arriba
 ```
@@ -188,6 +209,7 @@ sudo certbot --nginx -d TU-DOMINIO
 ### 5. Verificar
 
 ```bash
+# (sustituye /mcp por tu RESOURCE_PATH si la has cambiado)
 # Sin token — debe dar 401 con www-authenticate
 curl -si https://TU-DOMINIO/mcp
 
@@ -209,3 +231,13 @@ docker build -t resource-guard:latest .
 Luego, en tu herramienta de gestión de contenedores (p. ej. Portainer): por
 cada stack afectado, redeploy sin volver a hacer pull de imagen — la imagen
 es local.
+
+## Tests
+
+Sin red ni Docker: el JWKS y el upstream están simulados.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
+```
