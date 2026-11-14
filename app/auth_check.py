@@ -35,18 +35,27 @@ def unauthorized():
     )
 
 
+def _decode_and_validate(token: str, key_set):
+    try:
+        claims = jwt.decode(token, key_set)
+    except ValueError as exc:
+        # authlib lanza ValueError, no JoseError, cuando el kid del token no
+        # está en el key set. Se trata como cualquier otro token que no valida.
+        raise JoseError(description=str(exc)) from exc
+    claims.validate()
+    return claims
+
+
 def verify_token(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise unauthorized()
     token = authorization[len("Bearer "):]
 
     try:
-        claims = jwt.decode(token, fetch_jwks())
-        claims.validate()
+        claims = _decode_and_validate(token, fetch_jwks())
     except JoseError:
         try:
-            claims = jwt.decode(token, fetch_jwks(force=True))
-            claims.validate()
+            claims = _decode_and_validate(token, fetch_jwks(force=True))
         except JoseError:
             raise unauthorized()
 
