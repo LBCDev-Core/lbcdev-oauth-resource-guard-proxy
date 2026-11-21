@@ -1,4 +1,4 @@
-# lbcdev-lab-oauth-resource-guard-proxy
+# lbcdev-oauth-resource-guard-proxy
 
 Proxy validador de tokens OAuth, reutilizable: la misma imagen protege
 cualquier recurso propio verificando un JWT emitido por
