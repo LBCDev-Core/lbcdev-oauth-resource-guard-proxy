@@ -2,7 +2,7 @@
 
 Proxy validador de tokens OAuth, reutilizable: la misma imagen protege
 cualquier recurso propio verificando un JWT emitido por
-[`lbcdev-lab-oauth-server`](https://github.com/Luinux81/lbcdev-lab-oauth-server)
+[`lbcdev-oauth-server`](https://github.com/LBCDev-Core/lbcdev-oauth-server)
 (o cualquier authorization server compatible con OAuth 2.1 + JWKS público).
 La configuración por recurso (qué protege, contra qué upstream y en qué ruta
 se expone) entra por variables de entorno.
