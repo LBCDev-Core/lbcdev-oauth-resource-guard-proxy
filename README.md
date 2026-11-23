@@ -14,17 +14,34 @@ correr en el mismo servidor — normalmente, una por recurso.
 ## Stack
 
 - FastAPI + `httpx` (proxy streaming, cliente async)
-- `authlib` (verificación JWT contra JWKS)
+- `authlib` (verificación JWT contra JWKS; Authlib 1.9 marca `authlib.jose` como obsoleto, hay migración pendiente a `joserfc`)
 
 ## Cómo funciona
 
-1. Descarga y cachea el JWKS del `AUTH_ISSUER` (refresco automático si aparece
-   un `kid` desconocido)
-2. Verifica firma, expiración y que `aud` coincide exactamente con `RESOURCE_URL`
+1. Descarga y cachea el JWKS del `AUTH_ISSUER` (una hora). Si llega un token cuya
+   clave no está en caché, hace **un** refresco, como máximo uno cada 30 s
+2. Valida el token con la política de abajo
 3. Si es válido, reenvía la petición a `UPSTREAM_URL` (aplicando
    `UPSTREAM_EXTRA_HEADERS` si está definida), incluyendo streaming/SSE
 4. Si no hay token o es inválido, responde `401` con `WWW-Authenticate`
-   apuntando a su propio `/.well-known/oauth-protected-resource`
+   apuntando a su propio `/.well-known/oauth-protected-resource`. Si el servidor
+   OAuth no responde y no hay JWKS en caché, responde `503` con `Retry-After`
+
+### Política de validación del token
+
+| Regla | Detalle |
+|---|---|
+| Algoritmo | Solo `RS256`. `none`, `HS*` y cualquier otro se rechazan antes de mirar la firma |
+| Clave | La cabecera debe traer `kid`; la firma se comprueba con esa clave del JWKS |
+| `exp` | Obligatorio y vigente |
+| `iss` | Obligatorio; igual a `AUTH_ISSUER` |
+| `aud` | Obligatorio; igual a `RESOURCE_URL` (o una lista que lo contenga) |
+| Cabecera | `Authorization: Bearer <token>`; el nombre del esquema no distingue mayúsculas (RFC 7235). Máx. 8 KiB |
+| Cualquier otro fallo | `401`, nunca `500` |
+
+Los tokens que emite `lbcdev-oauth-server` ya cumplen todo esto (RS256, `kid`, `exp`, `iss`, `aud`).
+Qué no hace el guard: no comprueba `scope`, y reenvía la cabecera `Authorization` del cliente al
+upstream salvo que `UPSTREAM_EXTRA_HEADERS` la sobrescriba.
 
 ## Variables de entorno
 
@@ -232,12 +249,34 @@ Luego, en tu herramienta de gestión de contenedores (p. ej. Portainer): por
 cada stack afectado, redeploy sin volver a hacer pull de imagen — la imagen
 es local.
 
+## Dependencias
+
+Las versiones están **fijadas con hashes** en `requirements.txt` y `requirements-dev.txt`, generados desde
+`requirements.in` y `requirements-dev.in`. No se editan a mano. Para actualizar (con Docker, mismo Python que la imagen):
+
+```bash
+docker run --rm -v "$PWD":/w -w /w python:3.12-slim bash -c '
+  pip install -q pip-tools==7.7.0
+  pip-compile --upgrade --generate-hashes --no-strip-extras --no-header --annotation-style=line -o requirements.txt requirements.in
+  pip-compile --generate-hashes --no-strip-extras --no-header --annotation-style=line -o requirements-dev.txt requirements-dev.in'
+```
+
+El CI comprueba que el lock coincide con los `.in` y ejecuta `pip-audit` (job `audit`, también cada lunes).
+Un falso positivo que no aplique se acepta solo con `--ignore-vuln ID` en `.github/workflows/ci.yml`,
+con motivo y fecha de revisión. Dependabot abre las PR de actualización (pip, Docker y Actions).
+
 ## Tests
 
-Sin red ni Docker: el JWKS y el upstream están simulados.
+Sin red ni Docker: el JWKS y el upstream están simulados. Con las mismas versiones que la imagen:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install --require-hashes -r requirements.txt -r requirements-dev.txt
 .venv/bin/python -m pytest
 ```
+
+`tests/test_jwt_security.py` es la regresión de seguridad de la validación del token.
+
+## Despliegue y rollback
+
+Ver [`docs/despliegue-y-rollback.md`](docs/despliegue-y-rollback.md).
