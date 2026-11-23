@@ -1,0 +1,133 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Los avisos de seguridad nuevos aparecen sin que haya cambios: una pasada semanal los detecta.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      # Mismos ficheros bloqueados (con hashes) que la imagen: pip rechaza cualquier paquete distinto.
+      - run: pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+      - run: pytest -q
+
+  # requirements.txt (bloqueado) tiene que seguir siendo coherente con requirements.in. Se comparan
+  # nombre==versión y no los hashes: PyPI puede añadir ruedas a una versión ya publicada.
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-tools==7.7.0
+      - name: Regenerar los locks y comparar versiones
+        run: |
+          pins() { grep -E '^[A-Za-z0-9_.-]+(\[[a-z,]+\])?==' "$1" | sed 's/ .*//' | sort; }
+          for f in requirements requirements-dev; do
+            pip-compile -q --generate-hashes --no-strip-extras --no-header --annotation-style=line \
+              --output-file="/tmp/$f.txt" "$f.in"
+            if ! diff <(pins "$f.txt") <(pins "/tmp/$f.txt"); then
+              echo "::error::$f.txt no coincide con $f.in. Regenéralo (README, apartado «Dependencias»)."
+              exit 1
+            fi
+          done
+
+  # Falla ante vulnerabilidades conocidas en las dependencias bloqueadas. Un falso positivo que no
+  # aplique se acepta SOLO añadiendo --ignore-vuln ID abajo, con el motivo y la fecha de revisión.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.1
+      - name: pip-audit
+        run: |
+          pip-audit --requirement requirements.txt --strict --progress-spinner off \
+            --desc on
+          # Excepciones justificadas (ninguna por ahora):
+          #   --ignore-vuln PYSEC-XXXX-NNNN   # motivo: ... | revisar antes de AAAA-MM-DD
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir imagen etiquetada con el commit
+        run: |
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            -t "guard:${{ github.sha }}" .
+      - name: La imagen no corre como root y define healthcheck
+        run: |
+          user=$(docker inspect --format '{{ .Config.User }}' "guard:${{ github.sha }}")
+          hc=$(docker inspect --format '{{ json .Config.Healthcheck }}' "guard:${{ github.sha }}")
+          echo "user=$user healthcheck=$hc"
+          # Un comando por línea: en `a && b && c` un fallo de a o b NO aborta el paso (bash -e).
+          if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "0" ]; then
+            echo "::error::la imagen corre como root (USER='$user')"
+            exit 1
+          fi
+          if [ "$hc" = "null" ]; then
+            echo "::error::la imagen no define HEALTHCHECK"
+            exit 1
+          fi
+      - name: La base está fijada por digest
+        run: grep -E '^FROM .+@sha256:[0-9a-f]{64}$' Dockerfile
+      # Con el endurecimiento máximo que se recomienda en producción: solo lectura, sin capabilities, sin red.
+      # Los valores de entorno son ficticios (solo CI).
+      - name: Arrancar y esperar a healthy
+        run: |
+          docker run -d --name guard-smoke --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --health-interval 2s --health-timeout 3s --health-retries 2 --health-start-period 10s \
+            -e AUTH_ISSUER=https://auth.example.test \
+            -e RESOURCE_URL=https://mcp.example.test/mcp \
+            -e UPSTREAM_URL=http://upstream.test:8000/mcp \
+            "guard:${{ github.sha }}"
+          for i in $(seq 1 40); do
+            status=$(docker inspect --format '{{ .State.Health.Status }}' guard-smoke)
+            echo "intento $i: $status"
+            [ "$status" = "healthy" ] && exit 0
+            [ "$status" = "unhealthy" ] && break
+            sleep 1
+          done
+          docker logs guard-smoke
+          exit 1
+      # OJO: `docker exec` solo pasa el stdin al contenedor con -i. Sin él el script no se ejecuta y el
+      # comando sale con 0 (un paso que "pasa" sin comprobar nada). Por eso el script imprime una marca
+      # y el paso exige verla: si el script no corre o no llega al final, el paso falla.
+      - name: Sin token responde 401 con WWW-Authenticate
+        run: |
+          out=$(docker exec -i guard-smoke python - <<'PY'
+          import urllib.request, urllib.error
+          try:
+              urllib.request.urlopen("http://127.0.0.1:8000/mcp")
+          except urllib.error.HTTPError as e:
+              assert e.code == 401, f"se esperaba 401 y llegó {e.code}"
+              assert "resource_metadata" in e.headers["WWW-Authenticate"], "falta resource_metadata"
+              print("HTTP 401 OK")
+          else:
+              raise SystemExit("se esperaba 401 y la petición tuvo éxito")
+          PY
+          )
+          echo "$out"
+          test "$out" = "HTTP 401 OK"
+      - if: failure()
+        run: docker logs guard-smoke || true

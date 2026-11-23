@@ -1,0 +1,6 @@
+# Dependencias directas. El fichero bloqueado (con hashes) es requirements.txt:
+# NO editarlo a mano; regenerarlo con el procedimiento de README.md ("Dependencias").
+fastapi>=0.165,<1
+uvicorn[standard]>=0.54,<1
+authlib>=1.9.10,<2
+httpx>=0.28,<1

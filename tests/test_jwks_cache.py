@@ -82,9 +82,8 @@ def test_token_with_unknown_kid_gives_401(load_app, jwks_server, token):
     assert len(jwks_server.calls) == 2
 
 
-def test_invalid_token_triggers_one_refresh_then_401(load_app, jwks_server, token, other_key):
-    # Comportamiento actual: cada token que no valida (firma o expiración)
-    # provoca una descarga forzada del JWKS antes de responder 401.
+def test_bad_signature_triggers_one_refresh_then_401(load_app, jwks_server, token, other_key):
+    # Una firma que no valida puede ser una rotación de clave: un refresco, y 401 si sigue sin valer.
     main, seen = load_app(patch_jwks=False)
     client = TestClient(main.app)
     assert client.get("/mcp", headers=auth(token)).status_code == 200
@@ -92,9 +91,16 @@ def test_invalid_token_triggers_one_refresh_then_401(load_app, jwks_server, toke
 
     assert client.get("/mcp", headers=auth(make_token(key=other_key))).status_code == 401
     assert len(jwks_server.calls) == 2
-    assert client.get("/mcp", headers=auth(make_token(exp=1))).status_code == 401
-    assert len(jwks_server.calls) == 3
     assert len(seen) == 1
+
+
+def test_expired_token_does_not_refresh(load_app, jwks_server, token):
+    # La firma es buena y solo falla un claim: no hay motivo para volver a descargar el JWKS.
+    main, _ = load_app(patch_jwks=False)
+    client = TestClient(main.app)
+    assert client.get("/mcp", headers=auth(token)).status_code == 200
+    assert client.get("/mcp", headers=auth(make_token(exp=1))).status_code == 401
+    assert len(jwks_server.calls) == 1
 
 
 def test_wrong_audience_does_not_refresh(load_app, jwks_server, token):

@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # requirements.in es la fuente; Dependabot propone el cambio y el CI comprueba
+  # que requirements.txt sigue siendo coherente con él (ver ci.yml).
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
