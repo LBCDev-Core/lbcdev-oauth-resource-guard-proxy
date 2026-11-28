@@ -284,3 +284,8 @@ python3 -m venv .venv
 ## Despliegue y rollback
 
 Ver [`docs/despliegue-y-rollback.md`](docs/despliegue-y-rollback.md).
+
+
+## Publicación reproducible en GHCR
+
+Los pushes a main publican la imagen exacta probada por CI después de superar tests, lock, audit y docker. El job publish tiene permiso packages:write; los demás conservan contents:read. La imagen se transfiere como artefacto temporal de un día y se publica en ghcr.io/lbcdev-core/lbcdev-oauth-resource-guard-proxy con etiqueta sha-COMMIT. Usar el digest del resumen de CI en el Compose de cada instancia. No se publica latest ni se redespliegan servicios automáticamente. Las instancias existentes con resource-guard:latest local siguen funcionando sin cambios hasta su migración explícita.
