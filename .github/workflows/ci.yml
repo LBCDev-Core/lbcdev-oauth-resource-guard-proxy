@@ -131,3 +131,44 @@ jobs:
           test "$out" = "HTTP 401 OK"
       - if: failure()
         run: docker logs guard-smoke || true
+
+      - name: Save tested guard image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save "guard:$GITHUB_SHA" -o "$RUNNER_TEMP/guard.tar"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: tested-guard-image
+          path: ${{ runner.temp }}/guard.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [tests, lock, audit, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tested-guard-image
+          path: ${{ runner.temp }}
+      - name: Publish exact tested image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/lbcdev-core/lbcdev-oauth-resource-guard-proxy"
+          tag="$image:sha-$GITHUB_SHA"
+          docker load -i "$RUNNER_TEMP/guard.tar"
+          test "$(docker image inspect "guard:$GITHUB_SHA" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker tag "guard:$GITHUB_SHA" "$tag"
+          docker push "$tag"
+          digest=$(docker image inspect "$tag" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -F "$image@sha256:")
+          test -n "$digest"
+          printf 'Published guard image: %s\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
