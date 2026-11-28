@@ -81,3 +81,36 @@ def test_host_and_extra_headers_together(load_app, token):
     TestClient(main.app).delete("/mcp", headers=auth(token))
     assert seen[0].headers["host"] == "127.0.0.1:8000"
     assert seen[0].headers["x-api-key"] == "k"
+
+
+def test_file_headers_override_client(load_app, token, tmp_path):
+    path = tmp_path / "headers"
+    path.write_text("X-Internal: fixture\n")
+    main, seen = load_app(env={"UPSTREAM_EXTRA_HEADERS_FILE": str(path)})
+    client = TestClient(main.app)
+    assert client.post("/mcp", headers={"X-Internal": "spoof"}).status_code == 401
+    assert not seen
+    assert client.post("/mcp", headers={**auth(token), "x-internal": "spoof"}).status_code == 200
+    assert seen[0].headers.get_list("x-internal") == ["fixture"]
+
+
+def test_file_invalid_fails_closed(load_app, tmp_path):
+    import pytest
+    path = tmp_path / "headers"
+    for content in (b"", b"bad line", b"X-A: a\nx-a: b", b"Host: x",
+                    b"X-A: a\x00b", b"X-A: " + b"x" * 8192):
+        path.write_bytes(content)
+        with pytest.raises(RuntimeError, match="invalid upstream extra-header file"):
+            load_app(env={"UPSTREAM_EXTRA_HEADERS_FILE": str(path)})
+    path.unlink()
+    with pytest.raises(RuntimeError, match="invalid upstream extra-header file"):
+        load_app(env={"UPSTREAM_EXTRA_HEADERS_FILE": str(path)})
+
+
+def test_file_and_env_conflict(load_app, tmp_path):
+    import pytest
+    path = tmp_path / "headers"
+    path.write_text("X-A: fixture")
+    with pytest.raises(RuntimeError, match="configure only one"):
+        load_app(env={"UPSTREAM_EXTRA_HEADERS_FILE": str(path),
+                      "UPSTREAM_EXTRA_HEADERS": "X-B: fixture"})
