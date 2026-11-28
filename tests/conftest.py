@@ -51,6 +51,7 @@ def load_app(monkeypatch):
         monkeypatch.setenv("UPSTREAM_URL", UPSTREAM_URL)
         monkeypatch.delenv("UPSTREAM_HOST_HEADER", raising=False)
         monkeypatch.delenv("UPSTREAM_EXTRA_HEADERS", raising=False)
+        monkeypatch.delenv("UPSTREAM_EXTRA_HEADERS_FILE", raising=False)
         if resource_path is None:
             monkeypatch.delenv("RESOURCE_PATH", raising=False)
         else:
