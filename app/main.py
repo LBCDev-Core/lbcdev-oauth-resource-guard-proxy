@@ -1,4 +1,5 @@
 import os
+import re
 import httpx
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -35,7 +36,40 @@ def _parse_extra_headers(raw: str) -> dict[str, str]:
     return headers
 
 
-UPSTREAM_EXTRA_HEADERS = _parse_extra_headers(UPSTREAM_EXTRA_HEADERS_RAW)
+def _load_extra_headers() -> dict[str, str]:
+    """Optional secret file; invalid configuration fails without printing values."""
+    path = os.environ.get("UPSTREAM_EXTRA_HEADERS_FILE")
+    if path is None:
+        return _parse_extra_headers(UPSTREAM_EXTRA_HEADERS_RAW)
+    if UPSTREAM_EXTRA_HEADERS_RAW.strip():
+        raise RuntimeError("configure only one extra-header source")
+    try:
+        with open(path, "rb") as source:
+            raw = source.read(8193)
+        if not raw or len(raw) > 8192:
+            raise ValueError()
+        headers = {}
+        for line in raw.decode("ascii").split("\n"):
+            line = line.removesuffix("\r").strip(" ")
+            if not line:
+                continue
+            key, sep, value = line.partition(":")
+            key = key.strip(" ").lower()
+            value = value.strip(" ")
+            if (not sep or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9a-z-]+", key)
+                    or not value or any(ord(c) < 32 or ord(c) > 126 for c in value)
+                    or key in headers or key in HOP_BY_HOP
+                    or key in {"te", "trailer", "proxy-authorization", "proxy-authenticate"}):
+                raise ValueError()
+            headers[key] = value
+        if not headers:
+            raise ValueError()
+        return headers
+    except (OSError, ValueError):
+        raise RuntimeError("invalid upstream extra-header file") from None
+
+
+UPSTREAM_EXTRA_HEADERS = _load_extra_headers()
 
 
 def _resolve_resource_path(raw: str | None) -> str:
