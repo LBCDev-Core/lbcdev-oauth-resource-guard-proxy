@@ -54,6 +54,10 @@ upstream salvo que `UPSTREAM_EXTRA_HEADERS` la sobrescriba.
 | `UPSTREAM_HOST_HEADER` | no | `127.0.0.1:8000` — fuerza la cabecera `Host` hacia el upstream, necesario si este valida por `Host` (protección anti DNS-rebinding) |
 | `UPSTREAM_EXTRA_HEADERS` | no | Cabeceras fijas a inyectar/sobreescribir hacia el upstream, una por línea (`Cabecera:valor`). Sobreescribe cualquier cabecera entrante con el mismo nombre — útil para upstreams que exigen credenciales propias además del JWT que ya valida `guard` |
 
+### Cabeceras privadas desde archivo
+
+Alternativa a `UPSTREAM_EXTRA_HEADERS`: definir `UPSTREAM_EXTRA_HEADERS_FILE=/run/secrets/upstream_headers` y montar un archivo de solo lectura, legible por UID 10001. Contenido ASCII, una cabecera por línea, máximo 8 KiB. No incluir valores reales en Git ni variables de entorno. El archivo se lee al arrancar; para rotarlo, sustituirlo de forma segura y recrear el contenedor. Las dos fuentes son mutuamente excluyentes. Archivo ausente, vacío, inválido, cabeceras duplicadas o de transporte prohibidas impiden arrancar sin mostrar los valores. Se conserva el comportamiento anterior cuando no se define la opción.
+
 ## Endpoints
 
 | Método | Ruta | Función |
